@@ -4,10 +4,11 @@ import time
 from queue import Queue
 import requests
 from lxml import html
+import sys
 
 
-def check_plate(plate):
-    url = f'https://findbyplate.com/US/GA/{plate}/'
+def check_plate(state, plate):
+    url = f'https://findbyplate.com/US/{state}/{plate}/'
     headers = {'User-Agent': 'Mozilla/5.0'}
     tries = 3
 
@@ -25,16 +26,16 @@ def check_plate(plate):
                 else:
                     return "NONE"
             else:
-                print(f'Response error {response.status_code} for {plate}')
+                print(f'\nResponse error {response.status_code} for {plate}')
                 tries -= 1
                 time.sleep(1)
         except requests.exceptions.ConnectionError as e:
-            print(f'Connection error for {plate}: {e}')
+            print(f'\nConnection error for {plate}: {e}')
             tries -= 1
             time.sleep(1)
 
 
-def worker(q: Queue, db_filename, times) -> None:
+def worker(state, q: Queue, db_filename, times) -> None:
     conn = sqlite3.connect(db_filename)
     while True:
         start_time = time.monotonic()
@@ -42,7 +43,7 @@ def worker(q: Queue, db_filename, times) -> None:
         if plate is None:
             break
         cursor = conn.cursor()
-        model = check_plate(plate)
+        model = check_plate(state, plate)
         cursor.execute("INSERT INTO plates VALUES (?, ?)", (plate, model))
         conn.commit()
         cursor.close()
@@ -54,6 +55,10 @@ def worker(q: Queue, db_filename, times) -> None:
 
 def main() -> None:
     num_threads = 128
+    state = sys.argv[1]
+
+    chars = [f"{i}" for i in range(10)] + [chr(i)
+                                           for i in range(ord("A"), ord("Z") + 1)]
 
     conn = sqlite3.connect('plates.db')
     cur = conn.cursor()
@@ -62,16 +67,19 @@ def main() -> None:
 
     q = Queue()
 
-    for n in ["%04d" % i for i in range(0, 9999)]:
-        plate = f"TEF{n}"
-        q.put(plate)
+    for a in chars:
+        for b in chars:
+            for c in chars:
+                plate = f"C42{a}{b}{c}"
+                q.put(plate)
 
     qsize = q.qsize()
     threads = []
     times = []
 
     for i in range(num_threads):
-        t = threading.Thread(target=worker, args=(q, 'plates.db', times))
+        t = threading.Thread(target=worker, args=(
+            state, q, 'plates.db', times))
         t.start()
         threads.append(t)
 
@@ -92,7 +100,7 @@ def main() -> None:
     for t in threads:
         t.join()
 
-    cur.execute("SELECT plate, model FROM plates WHERE model LIKE '%NISSAN%'")
+    cur.execute("SELECT plate, model FROM plates WHERE model LIKE '%HYUNDAI%'")
     results = cur.fetchall()
 
     print("\nResults:")
