@@ -1,35 +1,106 @@
-from bs4 import BeautifulSoup as soup
-from urllib.request import Request, urlopen
+import sqlite3
+import threading
+import time
+from queue import Queue
+import requests
+from lxml import html
 
 
 def check_plate(plate):
-    url = 'https://findbyplate.com/US/GA/' + plate + '/'
-    req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    url = f'https://findbyplate.com/US/GA/{plate}/'
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    tries = 3
 
-    webpage = urlopen(req).read()
-    page_soup = soup(webpage, "html.parser")
-    if len(page_soup.findAll("i", "fa-spinner")) < 2:  # check if plate was found
-        return page_soup.findAll("h2", "vehicle-modal")[0].contents[0]
-    else:
-        return "NONE"
+    while tries > 0:
+        try:
+            response = requests.get(url, headers=headers)
+            if response.ok:
+                page = html.fromstring(response.content)
+                if len(page.xpath('//i[@class="fa-spinner"]')) < 2:
+                    results = page.xpath('//h2[@class="vehicle-modal"]/text()')
+                    if results:
+                        return results[0].strip()
+                    else:
+                        return "NONE"
+                else:
+                    return "NONE"
+            else:
+                print(f'Response error {response.status_code} for {plate}')
+                tries -= 1
+                time.sleep(1)
+        except requests.exceptions.ConnectionError as e:
+            print(f'Connection error for {plate}: {e}')
+            tries -= 1
+            time.sleep(1)
 
 
-def main():
-    # used for testing purposes
-    # plate = "TEF0567"
+def worker(q: Queue, db_filename, times) -> None:
+    conn = sqlite3.connect(db_filename)
+    while True:
+        start_time = time.monotonic()
+        plate = q.get()
+        if plate is None:
+            break
+        cursor = conn.cursor()
+        model = check_plate(plate)
+        cursor.execute("INSERT INTO plates VALUES (?, ?)", (plate, model))
+        conn.commit()
+        cursor.close()
+        q.task_done()
+        end_time = time.monotonic()
+        times.append(end_time - start_time)
+    conn.close()
+
+
+def main() -> None:
+    num_threads = 128
+
+    conn = sqlite3.connect('plates.db')
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS plates (plate TEXT, model TEXT)")
+    conn.commit()
+
+    q = Queue()
 
     for n in ["%04d" % i for i in range(0, 9999)]:
-        plate = "TEF" + n
+        plate = f"TEF{n}"
+        q.put(plate)
 
-        print(plate)
+    qsize = q.qsize()
+    threads = []
+    times = []
 
-        model = check_plate(plate)
+    for i in range(num_threads):
+        t = threading.Thread(target=worker, args=(q, 'plates.db', times))
+        t.start()
+        threads.append(t)
 
-        if model.lower() != "none":
-            print("model: " + model.upper())
-        if "NISSAN" in model.upper():
-            print("Success!")
-            break
+    while not q.empty():
+        remaining = q.qsize()
+        completed = qsize - remaining
+        if completed > 0 and len(times) > 0:
+            avg_time = sum(times) / len(times)
+            remaining_time = (remaining / num_threads) * avg_time
+            progress = f" Progress: {completed}/{qsize}, " \
+                       f"Estimated Time: {remaining_time:.2f}s remaining"
+            print(progress, end='\r')
+        time.sleep(0.5)
+
+    q.join()
+    for i in range(num_threads):
+        q.put(None)
+    for t in threads:
+        t.join()
+
+    cur.execute("SELECT plate, model FROM plates WHERE model LIKE '%NISSAN%'")
+    results = cur.fetchall()
+
+    print("\nResults:")
+    for row in results:
+        print("  ", row)
+
+    conn.close()
 
 
-main()
+if __name__ == "__main__":
+    main()
