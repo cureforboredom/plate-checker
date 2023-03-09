@@ -44,8 +44,9 @@ def worker(state, q: Queue, db_filename, times) -> None:
             break
         cursor = conn.cursor()
         model = check_plate(state, plate)
-        cursor.execute("INSERT INTO plates VALUES (?, ?)", (plate, model))
-        conn.commit()
+        if model != "NONE":
+            cursor.execute("INSERT INTO plates VALUES (?, ?)", (plate, model))
+            conn.commit()
         cursor.close()
         q.task_done()
         end_time = time.monotonic()
@@ -57,9 +58,6 @@ def main() -> None:
     num_threads = 128
     state = sys.argv[1]
 
-    chars = [f"{i}" for i in range(10)] + [chr(i)
-                                           for i in range(ord("A"), ord("Z") + 1)]
-
     conn = sqlite3.connect('plates.db')
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS plates (plate TEXT, model TEXT)")
@@ -67,11 +65,15 @@ def main() -> None:
 
     q = Queue()
 
-    for a in chars:
-        for b in chars:
-            for c in chars:
-                plate = f"C42{a}{b}{c}"
-                q.put(plate)
+    prefixes = []
+
+    for i in range(ord("A"), ord("Z") + 1):
+        prefixes.append(chr(i) + "EF")
+        prefixes.append("EF" + chr(i))
+
+    for p in prefixes:
+        for n in ["%04d" % i for i in range(0, 9999)]:
+            q.put(p + n)
 
     qsize = q.qsize()
     threads = []
@@ -100,7 +102,7 @@ def main() -> None:
     for t in threads:
         t.join()
 
-    cur.execute("SELECT plate, model FROM plates WHERE model LIKE '%HYUNDAI%'")
+    cur.execute("SELECT plate, model FROM plates WHERE model LIKE '%NISSAN%'")
     results = cur.fetchall()
 
     print("\nResults:")
